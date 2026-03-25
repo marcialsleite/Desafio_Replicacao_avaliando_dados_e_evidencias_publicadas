@@ -1,0 +1,376 @@
+# Desafio de replicação
+# Trabalho final da disciplina Métodos Quantitativos
+# MQ101 - 2025
+# Bruna Tavares Leite RA 23202510328
+# Márcia de Lima Santos Leite  RA 21202510155
+
+#Effects of age and speed on the ankle–foot system’s power during walking
+
+# Limpa o ambiente
+rm(list = ls())
+
+# 1. Carregamento de Pacotes
+library(tidyverse)
+library(rstatix)
+library(knitr)
+
+# 2. Leitura dos Dados (AJUSTADO: separador vírgula e decimal ponto)
+
+# Substitua o caminho abaixo pelo seu, se necessário
+caminho <- "E:/Documentos/Márcia/UFABC Mestrado/Métodos Quantitativos/Para o desafio da replicabilidade/UDstatsallspeeds2.csv"
+caminho <- "C:/Users/bruna/OneDrive/Documentos/UDstatsallspeeds2.csv"
+
+# Usamos read.csv porque ele é mais estável com caminhos longos e encodings
+Dados1 <- read.csv(caminho, sep = ",", dec = ".", header = TRUE)
+
+# --- LIMPEZA CRÍTICA ---
+# Agora que as 21 colunas foram detectadas (porque usamos sep=","), o mutate vai funcionar!
+Dados1 <- Dados1 %>%
+  mutate(
+    AgeGroup = as.factor(AgeGroup),
+    # Converte as colunas principais para numérico caso o R tenha lido algo errado
+    across(c(Age, Height, Mass, BMI, LegLen, Speed, StanceTime), ~as.numeric(as.character(.)))
+  )
+
+# -----------------------------------------------------------------------------------
+# Tabela 1 - Características dos sujeitos (Médias e Desvios)
+
+Tabela1_geral <- Dados1 %>%
+  group_by(AgeGroup) %>%
+  summarise(
+    Idade       = paste0(round(mean(Age, na.rm=TRUE), 1), " ± ", round(sd(Age, na.rm=TRUE), 1)),
+    Altura      = paste0(round(mean(Height, na.rm=TRUE), 2), " ± ", round(sd(Height, na.rm=TRUE), 2)),
+    Massa       = paste0(round(mean(Mass, na.rm=TRUE), 1), " ± ", round(sd(Mass, na.rm=TRUE), 1)),
+    BMI         = paste0(round(mean(BMI, na.rm=TRUE), 1), " ± ", round(sd(BMI, na.rm=TRUE), 1)),
+    Comprimento = paste0(round(mean(LegLen, na.rm=TRUE), 2), " ± ", round(sd(LegLen, na.rm=TRUE), 2))
+  )
+
+# Velocidade e Stance por Condição
+Tabela1_speed_stance <- Dados1 %>%
+  group_by(AgeGroup, SpeedGroup) %>%
+  summarise(
+    Vel = paste0(round(mean(Speed, na.rm=TRUE), 2), " ± ", round(sd(Speed, na.rm=TRUE), 2)),
+    Stance = paste0(round(mean(StanceTime, na.rm=TRUE), 2), " ± ", round(sd(StanceTime, na.rm=TRUE), 2)),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(names_from = SpeedGroup, values_from = c(Vel, Stance))
+
+Tabela1_Final <- left_join(Tabela1_geral, Tabela1_speed_stance, by="AgeGroup")
+
+kable(Tabela1_Final, caption = "Tabela 1. Características dos sujeitos por grupo etário")
+
+# -----------------------------------------------------------------------------------
+# --- PARTE 2: ESTATÍSTICA INFERENCIAL (VERSÃO BLINDADA) ---
+
+# 1. Preparação dos dados (Limpando as "sujeiras" que causam o erro)
+Dados_sujeito_unicos <- Dados1 %>%
+  distinct(Subject, .keep_all = TRUE) %>%
+  mutate(
+    # Isso resolve o erro: garante que o R veja os grupos como categorias (Y/O)
+    AgeGroup = as.character(AgeGroup),
+    # Isso resolve o erro: força os dados a serem números puros
+    across(c(Age, Height, Mass, BMI, LegLen), ~as.numeric(as.character(.)))
+  ) %>%
+  # Remove linhas que tenham ficado vazias para não travar o Cohen's d
+  filter(!is.na(Age))
+
+# 2. Função de Cálculo (Ajustada para o pacote rstatix)
+# 1. Função Matemática Manual (Garante que o erro de 'eff' suma)
+calc_stats <- function(df, var_name) {
+  
+  # Separa os grupos
+  grupo_y <- df[[var_name]][df$AgeGroup == "Y"]
+  grupo_o <- df[[var_name]][df$AgeGroup == "O"]
+  
+  # Remove NAs
+  grupo_y <- grupo_y[!is.na(grupo_y)]
+  grupo_o <- grupo_o[!is.na(grupo_o)]
+  
+  # Teste T
+  teste <- t.test(grupo_y, grupo_o, var.equal = TRUE)
+  
+  # Cálculo manual do Cohen's d (para não depender de pacote nenhum)
+  n1 <- length(grupo_y)
+  n2 <- length(grupo_o)
+  m1 <- mean(grupo_y)
+  m2 <- mean(grupo_o)
+  s1 <- sd(grupo_y)
+  s2 <- sd(grupo_o)
+  
+  # Desvio padrão combinado (pooled standard deviation)
+  s_pooled <- sqrt(((n1 - 1) * s1^2 + (n2 - 1) * s2^2) / (n1 + n2 - 2))
+  d_manual <- (m1 - m2) / s_pooled
+  
+  # Organiza o resultado
+  data.frame(
+    Variavel = var_name,
+    t = round(teste$statistic, 2),
+    p = ifelse(teste$p.value < 0.001, "<0.001", as.character(signif(teste$p.value, 3))),
+    d = round(abs(d_manual), 2),
+    stringsAsFactors = FALSE
+  )
+}
+
+# 2. Execução (Rode apenas estas linhas agora)
+variaveis_gerais <- c("Age", "Height", "Mass", "BMI", "LegLen")
+
+# Usando um laço simples para garantir
+Tabela_stats_geral <- data.frame()
+for(v in variaveis_gerais) {
+  Tabela_stats_geral <- rbind(Tabela_stats_geral, calc_stats(Dados_sujeito_unicos, v))
+}
+
+# 3. Exibir
+kable(Tabela_stats_geral, caption = "Tabela Final: Comparação entre Grupos")
+
+
+
+# 4. Estatísticas de Speed por condição (Ajustado)
+Tabela_stats_speed <- Dados1 %>%
+  group_by(SpeedGroup) %>%
+  do({
+    df_condicao <- .
+    calc_stats(df_condicao, "Speed")
+  }) %>% rename(Condicao = SpeedGroup)
+
+# 5. Estatísticas de StanceTime por condição (Ajustado)
+Tabela_stats_stance <- Dados1 %>%
+  group_by(SpeedGroup) %>%
+  do({
+    df_condicao <- .
+    calc_stats(df_condicao, "StanceTime")
+  }) %>% rename(Condicao = SpeedGroup)
+
+# 6. Mostrar tabelas
+kable(Tabela_stats_geral, caption = "Estatísticas gerais (t, p, d)")
+kable(Tabela_stats_speed, caption = "Estatísticas de Speed por condição (t, p, d)")
+kable(Tabela_stats_stance, caption = "Estatísticas de StanceTime por condição (t, p, d)")
+
+#--------------------------------------------------------------------------------------------------
+#Figura 1 — Speed vs Age (marcador por condição S/C/F)
+
+install.packages("ggplot2")
+library(ggplot2)
+
+Dados1$Speed<-as.numeric(Dados1$Speed)
+
+ggplot(Dados1, aes(x = Age, y = Speed, shape = SpeedGroup, color = SpeedGroup)) +
+  geom_point(size = 3, alpha = 0.9, stroke = 1.1) +
+  scale_shape_manual(values = c(S = 25, C = 16, F = 24)) +
+  scale_color_brewer(palette = "Set1") +
+  scale_y_continuous(
+    breaks = seq(0.5, 2, by = 0.5),
+    limits = c(0.5, 2)
+  ) +
+  labs(
+    title = "Relação entre Idade e Velocidade",
+    x = "Idade (anos)",
+    y = "Velocidade (m/s)",
+    color = "Grupo de Velocidade",
+    shape = "Grupo de Velocidade"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "right")
+
+#--------------------------------------------------------------------------------------------------
+#Figura 2 - nao deu certo, pois falta outro banco de dados sobre series temporais
+
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# 1. Normalizar o tempo de apoio (0–100%)
+Dados_temporal <- Dados1 %>%
+  group_by(Subject, AgeGroup, SpeedGroup) %>%
+  mutate(StancePerc = seq(0, 100, length.out = n())) %>%
+  ungroup()
+
+# 2. Calcular médias e desvios por grupo/condição
+Dados_media <- Dados_temporal %>%
+  group_by(AgeGroup, SpeedGroup, StancePerc) %>%
+  summarise(
+    Pankle_mean = mean(Pankle, na.rm=TRUE),
+    Pankle_sd   = sd(Pankle, na.rm=TRUE),
+    Pfoot_mean  = mean(Pfoot, na.rm=TRUE),
+    Pfoot_sd    = sd(Pfoot, na.rm=TRUE),
+    Psum_mean   = mean(Psum, na.rm=TRUE),
+    Psum_sd     = sd(Psum, na.rm=TRUE),
+    .groups="drop"
+  )
+
+# 3. Converter para formato longo (cada variável vira uma linha)
+Dados_long <- Dados_media %>%
+  pivot_longer(cols = c(Pankle_mean, Pfoot_mean, Psum_mean,
+                        Pankle_sd, Pfoot_sd, Psum_sd),
+               names_to = c("Feature","stat"),
+               names_sep = "_") %>%
+  pivot_wider(names_from = stat, values_from = value)
+
+# 4. Plotar Figura 2
+ggplot(Dados_long, aes(x=StancePerc, y=mean, color=AgeGroup)) +
+  geom_line(size=1.2) +
+  geom_ribbon(aes(ymin=mean-sd, ymax=mean+sd, fill=AgeGroup),
+              alpha=0.2, color=NA) +
+  facet_grid(Feature ~ SpeedGroup, scales="free_y") +
+  labs(title="Figura 2. Séries temporais de potência",
+       x="Fase de apoio (%)",
+       y="Potência (W/kg)",
+       color="Grupo etário",
+       fill="Grupo etário") +
+  theme_minimal(base_size = 14)
+
+#A Figura 2 não é possível, pois não temos banco de dados de series temporais
+
+# --- Nova Figura 2: Comparação de Potências Médias ---
+
+library(ggplot2)
+library(tidyr)
+
+# 1. Preparar os dados para um formato que o ggplot entenda
+df_potencia <- Dados1 %>%
+  select(AgeGroup, SpeedGroup, Pankle, Pfoot, Psum) %>%
+  pivot_longer(cols = c(Pankle, Pfoot, Psum), 
+               names_to = "Articulacao", 
+               values_to = "Potencia")
+
+# 2. Plotar o gráfico de comparação
+ggplot(df_potencia, aes(x = SpeedGroup, y = Potencia, fill = AgeGroup)) +
+  stat_summary(fun = mean, geom = "bar", position = position_dodge(0.9)) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", 
+               position = position_dodge(0.9), width = 0.2) +
+  facet_wrap(~ Articulacao, scales = "free_y") +
+  labs(title = "Figura 2 Adaptada: Potência Média por Articulação e Velocidade",
+       x = "Condição de Velocidade (S, C, F)",
+       y = "Potência Média (W/kg)",
+       fill = "Grupo Etário") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Paired")
+
+#--------------------------------------------------------------------------------------------------
+# Figura 3 — 9 painéis (features vs Speed) com regressão linear
+
+#A figura tem 3×3:
+#  Linha 1: Pankle, Pfoot, Psum
+#  Linha 2: Wpankle, Wpfoot, Wpsum
+#  Linha 3: Wnankle, Wnfoot, Wnsum
+
+#  pontos por AgeGroup (Y e O)
+
+#linha “All” (todos juntos) em todos os painéis
+
+#no painel Wnfoot: linhas separadas por grupo (como no artigo)
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+feat_labels <- c(
+  Pankle  = "Pankle (W/kg)",
+  Pfoot   = "Pfoot (W/kg)",
+  Psum    = "Psum (W/kg)",
+  Wpankle = "W+ankle (J/kg)",
+  Wpfoot  = "W+foot (J/kg)",
+  Wpsum   = "W+sum (J/kg)",
+  Wnankle = "W-ankle (J/kg)",
+  Wnfoot  = "W-foot (J/kg)",
+  Wnsum   = "W-sum (J/kg)"
+)
+
+df_long <- Dados1 %>%
+  select(Subject, AgeGroup, Speed, Pankle:Psum, Wpankle:Wpsum, Wnankle:Wnsum) %>%
+  pivot_longer(cols = c(Pankle, Pfoot, Psum, Wpankle, Wpfoot, Wpsum, Wnankle, Wnfoot, Wnsum),
+               names_to = "Feature", values_to = "Value") %>%
+  mutate(Feature = factor(Feature, levels = names(feat_labels)))
+
+# Figura 3
+ggplot(df_long, aes(x = Speed, y = Value)) +
+  geom_point(aes(shape = AgeGroup, color = AgeGroup), alpha = 0.85, size = 2.2) +
+  # linha ALL (ajuste global) em todos
+  geom_smooth(method = "lm", se = FALSE, color = "darkgreen", linewidth = 1.0) +
+  # linhas por grupo SOMENTE para Wnfoot
+  geom_smooth(
+    data = df_long %>% filter(Feature == "Wnfoot"),
+    aes(color = AgeGroup),
+    method = "lm", se = FALSE, linewidth = 1.0
+  ) +
+  facet_wrap(~ Feature, scales = "free_y", ncol = 3,
+             labeller = as_labeller(feat_labels)) +
+  labs(x = "Speed (m/s)", y = NULL) +
+  theme_classic(base_size = 12) +
+  theme(
+    legend.position = "none",
+    strip.background = element_blank(),
+    strip.text = element_text(face = "plain")
+  )
+
+#--------------------------------------------------------------------------------------------------
+# Tabela 2 — modelos lineares mistos
+
+
+# No artigo eles ajustam, para cada feature, modelos com intercepto aleatório por sujeito:
+#feature ~ Speed + (1|Subject)
+#feature ~ AgeGroup + (1|Subject)
+#feature ~ Speed + AgeGroup + (1|Subject)
+#feature ~ Speed * AgeGroup + (1|Subject)
+
+library(dplyr)
+library(broom)
+library(knitr)
+
+# 1. Definir variáveis dependentes
+features <- c("Pankle","Pfoot","Psum",
+              "Wpankle","Wpfoot","Wpsum",
+              "Wnankle","Wnfoot","Wnsum")
+
+# 2. Função para rodar os modelos de regressão
+calc_models <- function(df, feature){
+  # Modelo 1: Speed
+  m1 <- lm(scale(df[[feature]]) ~ scale(Speed), data=df)
+  # Modelo 2: AgeGroup
+  m2 <- lm(scale(df[[feature]]) ~ AgeGroup, data=df)
+  # Modelo 3: Speed + AgeGroup
+  m3 <- lm(scale(df[[feature]]) ~ scale(Speed) + AgeGroup, data=df)
+  # Modelo 4: Speed * AgeGroup
+  m4 <- lm(scale(df[[feature]]) ~ scale(Speed) * AgeGroup, data=df)
+  
+  # Extrair resultados
+  res1 <- tidy(m1, conf.int=TRUE)
+  res2 <- tidy(m2, conf.int=TRUE)
+  res3 <- tidy(m3, conf.int=TRUE)
+  res4 <- tidy(m4, conf.int=TRUE)
+  
+  # Adicionar R² e AIC
+  add_stats <- function(model, res){
+    res$R2 <- summary(model)$r.squared
+    res$AIC <- AIC(model)
+    res
+  }
+  
+  res1 <- add_stats(m1,res1)
+  res2 <- add_stats(m2,res2)
+  res3 <- add_stats(m3,res3)
+  res4 <- add_stats(m4,res4)
+  
+  # Juntar tudo
+  res <- bind_rows(
+    res1 %>% mutate(Model="Speed"),
+    res2 %>% mutate(Model="AgeGroup"),
+    res3 %>% mutate(Model="Speed+AgeGroup"),
+    res4 %>% mutate(Model="Speed*AgeGroup")
+  ) %>%
+    mutate(Feature=feature)
+  
+  return(res)
+}
+
+# 3. Rodar para todos os features
+Tabela2 <- bind_rows(lapply(features, function(f) calc_models(Dados1, f)))
+
+# 4. Filtrar apenas os coeficientes principais (Speed, AgeGroup, interação)
+Tabela2_clean <- Tabela2 %>%
+  filter(term %in% c("scale(Speed)","AgeGroup","scale(Speed):AgeGroup")) %>%
+  select(Feature, Model, term, estimate, conf.low, conf.high, p.value, R2, AIC)
+
+# 5. Mostrar tabela
+kable(Tabela2_clean, digits=3,
+      caption="Tabela 2. Modelos de regressão linear para potência e trabalho")
